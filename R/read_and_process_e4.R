@@ -1,6 +1,6 @@
 #' Read, process and feature extraction of E4 data
-#' @description Reads the raw ZIP file using `read_e4`, 
-#'   performs analyses with `ibi_analysis` and `eda_analysis`. 
+#' @description Reads the raw ZIP file using `read_e4`,
+#'   performs analyses with `ibi_analysis` and `eda_analysis`.
 #' @param zipfile zip file with e4 data to be read
 #' @param tz timezone where data were recorded (default system timezone)
 #' @return An object with processed data and analyses, object of class 'e4_analysis'.
@@ -9,64 +9,92 @@
 #' @importFrom padr thicken
 #' @importFrom dplyr all_of
 #' @export
-read_and_process_e4 <- function(zipfile, tz = Sys.timezone()){
-  
+read_and_process_e4 <- function(zipfile, tz = Sys.timezone()) {
   data <- read_e4(zipfile, tz)
   
-  if(is.null(data)){
+  if (is.null(data)) {
     return(NULL)
   } else {
-    flog.info("Raw data read and converted.")
-    process_e4(data)  
+    .log_info("Raw data read and converted.")
+    process_e4(data)
   }
-  
-  
 }
 
 
-# Join EDA binary classifier output to a dataset, based on rounded 5sec intervals.
-# Rename 'label' to 'quality_flag'
-join_eda_bin <- function(data, eda_bin){
+#' Join EDA Binary Classifier Output to Dataset
+#'
+#' This function joins the output of an EDA binary classifier to a dataset based on 
+#' rounded 5-second intervals. It is designed to merge two data frames: one containing 
+#' your main data and another containing EDA binary classifier predictions. The function 
+#' ensures that each record in the main data is matched with the appropriate classifier 
+#' output by aligning timestamps to the nearest 5-second interval.
+#'
+#' @param data A data frame containing the main dataset with a 'DateTime' column 
+#' that represents timestamps.
+#' @param eda_bin A data frame containing the EDA binary classifier outputs, including 
+#' an 'id' column that represents timestamps. This data frame is expected to merge with 
+#' the main data frame based on these timestamps.
+#'
+#' @return A data frame that combines the main dataset with the EDA binary classifier 
+#' outputs. The classifier's label is renamed to 'quality_flag'. In cases where a precise 
+#' match for the 5-second interval is not found in the classifier output, NA values 
+#' may be introduced in the 'quality_flag' column.
+#'
+#' @details The function first uses `padr::thicken` to extend the main data frame by 
+#' creating a new column 'DateTime_5_sec', which rounds the 'DateTime' values to 5-second 
+#' intervals. Then, it performs a left join with the EDA binary classifier data, which 
+#' has been similarly adjusted using `lubridate::floor_date` to match these intervals. 
+#' After the join, unnecessary columns ('DateTime_5_sec' and 'id') are dropped, and the 
+#' classifier's 'label' column is renamed to 'quality_flag'.
+#'
+#' @examples
+#' \dontrun{
+#'   main_data <- data.frame(DateTime = as.POSIXct(...), ...)
+#'   classifier_data <- data.frame(id = as.POSIXct(...), label = ..., ...)
+#'   joined_data <- join_eda_bin(main_data, classifier_data)
+#' }
+#' @export
+join_eda_bin <- function(data, eda_bin) {
   
-  if(nrow(data) == 0){
+  if (nrow(data) == 0) {
     data$quality_flag <- integer(0)
     return(data)
   }
   
-  padr::thicken(data, interval = "5 sec") %>% 
-    dplyr::left_join(eda_bin, by = c("DateTime_5_sec" = "id")) %>%
-    dplyr::select(-dplyr::all_of("DateTime_5_sec")) %>%
+  padr::thicken(data, interval = "5 sec") %>%
+    dplyr::left_join(
+      mutate(eda_bin,
+             DateTime_5_sec = lubridate::floor_date(.data$id, "5 seconds")
+      ),
+      by = "DateTime_5_sec"
+    ) %>%
+    dplyr::select(-dplyr::all_of(c("DateTime_5_sec", "id"))) %>%
     dplyr::rename(quality_flag = "label")
-  
 }
-
-
-
 
 #' @rdname read_and_process_e4
 #' @export
 #' @param data object from read_e4 function
-process_e4 <- function(data){
-  
+process_e4 <- function(data) {
   suppressMessages({
     suppressWarnings({
-      ibi <- ibi_analysis(data$IBI)  
+      ibi <- ibi_analysis(data$IBI)
     })
   })
-  flog.info("IBI data analyzed.")
+  .log_info("IBI data analyzed.")
   
   eda_filt <- wearables::process_eda(data$EDA)
-  flog.info("EDA data filtered.")
+  .log_info("EDA data filtered.")
   
   eda_peaks <- find_peaks(eda_filt)
-  flog.info("Peak detection complete.")
+  .log_info("Peak detection complete.")
   
   eda_feat <- compute_features2(eda_filt)
-  flog.info("EDA Features computed")
+  .log_info("EDA Features computed")
   
   eda_bin_pred <- predict_binary_classifier(eda_feat)
-  eda_mc_pred  <- predict_multiclass_classifier(eda_feat)
-  flog.info("Model predictions generated, artifacts classified.")
+  eda_mc_pred <- predict_multiclass_classifier(eda_feat)
+  .log_info("Model predictions generated, artifacts classified.")
   
   # Add quality flags to data
   eda_filt <- join_eda_bin(eda_filt, eda_bin_pred)
@@ -103,14 +131,14 @@ process_e4 <- function(data){
   
   eda_clean <- dplyr::filter(eda_filt, .data$quality_flag == 1)
   
-  if(nrow(eda_clean) > 0){
+  if (nrow(eda_clean) > 0) {
     eda_summary <- list(
       EDA_clean_mean = mean(eda_clean$EDA),
       EDA_clean_median = median(eda_clean$EDA),
       EDA_clean_min = min(eda_clean$EDA),
       EDA_clean_max = max(eda_clean$EDA),
       EDA_clean_sd = sd(eda_clean$EDA)
-    )  
+    )
   } else {
     eda_summary <- list(
       EDA_clean_mean = NA,
@@ -123,13 +151,13 @@ process_e4 <- function(data){
   
   pks_clean <- dplyr::filter(eda_peaks, .data$quality_flag == 1)
   
-  if(nrow(eda_clean) > 0){
+  if (nrow(eda_clean) > 0) {
     peaks_summary <- list(
       peaks_clean_sum = nrow(pks_clean),
-      peaks_clean_per_min =  nrow(pks_clean) / time_range,
+      peaks_clean_per_min = nrow(pks_clean) / time_range,
       peaks_clean_mean_auc = mean(pks_clean$AUC),
       peaks_clean_mean_amp = mean(pks_clean$amp)
-    )  
+    )
   } else {
     peaks_summary <- list(
       peaks_clean_sum = 0,
@@ -139,35 +167,35 @@ process_e4 <- function(data){
   }
   
   
-  structure(list(
-    data = data,
-    ibi = ibi,
-    data_summary = list(
-      ACC = acc_summary,
-      TEMP = temp_summary,
-      HR = hr_summary,
-      EDA = eda_summary,
-      peaks = peaks_summary
+  structure(
+    list(
+      data = data,
+      ibi = ibi,
+      data_summary = list(
+        ACC = acc_summary,
+        TEMP = temp_summary,
+        HR = hr_summary,
+        EDA = eda_summary,
+        peaks = peaks_summary
+      ),
+      eda_peaks = eda_peaks,
+      eda_bin = eda_bin_pred,
+      eda_mc = eda_mc_pred
     ),
-    eda_peaks = eda_peaks,
-    eda_bin = eda_bin_pred,
-    eda_mc = eda_mc_pred
-  ), 
-  class = "e4_analysis")
-  
+    class = "e4_analysis"
+  )
 }
 
 
 
 #' Output folder
-#' 
+#'
 #' Create output folder for E4 analysis results
-#' 
+#'
 #' @param obj e4 analysis object
 #' @param out_path output folder
 #' @export
-create_e4_output_folder <- function(obj, out_path = "."){
-  
+create_e4_output_folder <- function(obj, out_path = ".") {
   stopifnot(inherits(obj, "e4_analysis"))
   
   # read_e4 stored the zipname as an attribute
@@ -186,16 +214,15 @@ create_e4_output_folder <- function(obj, out_path = "."){
 #' @param obj e4 analysis object
 #' @param out_path output folder
 #' @export
-write_processed_e4 <- function(obj, out_path = "."){
-  
+write_processed_e4 <- function(obj, out_path = ".") {
   stopifnot(inherits(obj, "e4_analysis"))
   
   out_folder <- create_e4_output_folder(obj, out_path)
   
-  #write.csv(obj$data$ , file.path(out_folder, ...)
+  # write.csv(obj$data$ , file.path(out_folder, ...)
   
-  file_out <- function(data, name){
-    write.csv2(data, file.path(out_folder,name), row.names = FALSE)
+  file_out <- function(data, name) {
+    write.csv2(data, file.path(out_folder, name), row.names = FALSE)
   }
   
   file_out(obj$data$EDA, "EDA.csv")
@@ -223,9 +250,4 @@ write_processed_e4 <- function(obj, out_path = "."){
   # EDA model predictions
   file_out(obj$eda_bin, "EDA_binary_prediction.csv")
   file_out(obj$eda_mc, "EDA_multiclass_prediction.csv")
-  
 }
-
-
-
-
